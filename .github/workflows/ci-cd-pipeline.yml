@@ -1,0 +1,163 @@
+name: Stackfolio - Build & Deploy to Docker Hub
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # ← allows manual trigger from GitHub UI
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/stackfolio-frontend
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 1: Build the React app
+  # ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build React App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build production bundle
+        working-directory: frontend
+        run: CI=false npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build/
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 2: Build Docker image & push to Docker Hub
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker-publish:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push to Docker Hub
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache,mode=max
+
+      - name: Print success summary
+        run: |
+          echo "✅ Docker image published!"
+          echo "📦 Image: ${{ env.DOCKER_IMAGE }}:latest"
+          echo ""
+          echo "To run locally:"
+          echo "  docker pull ${{ env.DOCKER_IMAGE }}:latest"
+          echo "  docker run -d -p 3000:3000 --name stackfolio ${{ env.DOCKER_IMAGE }}:latest"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 3: Pull & Run on server via SSH
+  # Only runs on push to main AND when DEPLOY_HOST secret is configured
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy via SSH
+    runs-on: ubuntu-latest
+    needs: docker-publish
+    # Skip this job if no deploy host is configured
+    if: ${{ secrets.DEPLOY_HOST != '' }}
+
+    environment:
+      name: production
+      url: http://${{ secrets.DEPLOY_HOST }}:3000
+
+    steps:
+      - name: SSH deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            echo "🔐 Logging into Docker Hub..."
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            echo "📦 Pulling latest image..."
+            docker pull ${{ env.DOCKER_IMAGE }}:latest
+
+            echo "🛑 Stopping old container..."
+            docker stop stackfolio 2>/dev/null || true
+            docker rm stackfolio 2>/dev/null || true
+
+            echo "🚀 Starting new container..."
+            docker run -d \
+              --name stackfolio \
+              --restart unless-stopped \
+              -p 3000:3000 \
+              ${{ env.DOCKER_IMAGE }}:latest
+
+            echo "🧹 Pruning unused images..."
+            docker image prune -f
+
+            echo "✅ Deployed! http://$(hostname -I | awk '{print $1}'):3000"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 4: Deploy to GitHub Pages
+  # ─────────────────────────────────────────────────────────────────────────────
+  github-pages:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./frontend/build
