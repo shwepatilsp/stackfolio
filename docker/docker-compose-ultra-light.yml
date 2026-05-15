@@ -1,0 +1,89 @@
+version: '3.9'
+
+services:
+  # PostgreSQL for Profile Service - minimal memory
+  postgres:
+    image: postgres:15-alpine
+    container_name: stackfolio-postgres
+    environment:
+      POSTGRES_DB: profile_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--shared-buffers=32MB --work-mem=2MB"
+    ports:
+      - "5432:5432"
+    networks:
+      - stackfolio-network
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+          cpus: '0.5'
+        reservations:
+          memory: 80M
+    command: >
+      postgres
+      -c shared_buffers=32MB
+      -c work_mem=2MB
+      -c maintenance_work_mem=16MB
+      -c effective_cache_size=64MB
+      -c max_connections=20
+
+  # Profile Service - ultra optimized
+  profile-service:
+    build:
+      context: ../backend
+      dockerfile: profile-service/Dockerfile
+    container_name: stackfolio-profile-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/profile_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      JAVA_OPTS: "-Xms32m -Xmx128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=200 -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:+UseCompressedOops -XX:+UseCompressedClassPointers"
+      SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_SIZE: 20
+      SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_INSERTS: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_ORDER_UPDATES: true
+      SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_BATCH_VERSIONED_DATA: true
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+    networks:
+      - stackfolio-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+
+  # Frontend - minimal build
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: stackfolio-frontend
+    environment:
+      REACT_APP_API_BASE_URL: http://localhost:8081
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=128"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - profile-service
+    networks:
+      - stackfolio-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.3'
+        reservations:
+          memory: 64M
+
+networks:
+  stackfolio-network:
+    driver: bridge
