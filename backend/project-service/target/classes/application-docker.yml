@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: project-service
+  
+  datasource:
+    url: jdbc:mysql://mysql:3306/projects_db?useSSL=false&serverTimezone=UTC
+    username: projects_user
+    password: projects_pass
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  
+  mybatis:
+    mapper-locations: classpath:/mybatis/mappers/*.xml
+    type-aliases-package: com.stackfolio.project.entity
+
+server:
+  port: 8082
+  servlet:
+    context-path: /
+  compression:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.stackfolio: DEBUG
+    org.springframework.web: DEBUG
