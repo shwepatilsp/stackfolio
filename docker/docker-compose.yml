@@ -1,0 +1,204 @@
+version: '3.9'
+
+services:
+  # PostgreSQL for Profile Service
+  postgres:
+    image: postgres:15-alpine
+    container_name: stackfolio-postgres
+    environment:
+      POSTGRES_DB: profile_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - stackfolio-network
+
+  # MySQL for Project Service
+  mysql:
+    image: mysql:8.0
+    container_name: stackfolio-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: projects_db
+      MYSQL_USER: projects_user
+      MYSQL_PASSWORD: projects_pass
+    ports:
+      # Map MySQL to an alternate host port to avoid local port conflicts.
+      # Services inside the docker network still connect to `mysql:3306`.
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - stackfolio-network
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: stackfolio-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - stackfolio-network
+
+  # Zookeeper for Kafka coordination
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: stackfolio-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_INIT_LIMIT: 5
+    ports:
+      - "2181:2181"
+    networks:
+      - stackfolio-network
+
+  # Apache Kafka for event streaming
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: stackfolio-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    networks:
+      - stackfolio-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ../backend
+      dockerfile: api-gateway/Dockerfile
+    container_name: stackfolio-api-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_CLOUD_GATEWAY_ROUTES_0_ID: profile_service
+      SPRING_CLOUD_GATEWAY_ROUTES_0_URI: http://profile-service:8081
+      SPRING_CLOUD_GATEWAY_ROUTES_0_PREDICATES_0: Path=/api/profile/**
+      SPRING_CLOUD_GATEWAY_ROUTES_1_ID: project_service
+      SPRING_CLOUD_GATEWAY_ROUTES_1_URI: http://project-service:8082
+      SPRING_CLOUD_GATEWAY_ROUTES_1_PREDICATES_0: Path=/api/projects/**
+      SPRING_CLOUD_GATEWAY_ROUTES_2_ID: interaction_service
+      SPRING_CLOUD_GATEWAY_ROUTES_2_URI: http://interaction-service:8083
+      SPRING_CLOUD_GATEWAY_ROUTES_2_PREDICATES_0: Path=/api/contact/**
+      REDIS_HOST: redis
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - profile-service
+      - project-service
+      - interaction-service
+    networks:
+      - stackfolio-network
+
+  # Profile Service
+  profile-service:
+    build:
+      context: ../backend
+      dockerfile: profile-service/Dockerfile
+    container_name: stackfolio-profile-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/profile_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+    networks:
+      - stackfolio-network
+
+  # Project Service
+  project-service:
+    build:
+      context: ../backend
+      dockerfile: project-service/Dockerfile
+    container_name: stackfolio-project-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/projects_db?useSSL=false&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: projects_user
+      SPRING_DATASOURCE_PASSWORD: projects_pass
+    ports:
+      - "8082:8082"
+    depends_on:
+      - mysql
+    networks:
+      - stackfolio-network
+
+  # Interaction Service
+  interaction-service:
+    build:
+      context: ../backend
+      dockerfile: interaction-service/Dockerfile
+    container_name: stackfolio-interaction-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/profile_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    ports:
+      - "8083:8083"
+    depends_on:
+      - kafka
+    networks:
+      - stackfolio-network
+
+  # Notification Service
+  notification-service:
+    build:
+      context: ../backend
+      dockerfile: notification-service/Dockerfile
+    container_name: stackfolio-notification-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_TO: ${MAIL_TO}
+    depends_on:
+      - kafka
+    networks:
+      - stackfolio-network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: stackfolio-frontend
+    environment:
+      REACT_APP_API_BASE_URL: http://api.stackfolio.local:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-gateway
+    networks:
+      - stackfolio-network
+
+networks:
+  stackfolio-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mysql_data:
+  redis_data:
