@@ -55,7 +55,7 @@ const Header: React.FC<HeaderProps> = () => {
             ))}
             <li>
               <a 
-                href="/resume.html" 
+                href={`${process.env.PUBLIC_URL}/resume.html`}
                 target="_blank"
                 className="rounded border border-brand-accent px-4 py-2 text-xs font-bold uppercase tracking-widest text-brand-accent hover:bg-brand-accent/10 transition-all"
               >
